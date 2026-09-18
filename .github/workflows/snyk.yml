@@ -1,0 +1,99 @@
+name: snyk
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  sca:
+    name: Open source (SCA)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [Jivora-backend, jivora-web, jivora-admin]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: >-
+            --file=${{ matrix.project }}/package.json
+            --severity-threshold=low
+            --sarif-file-output=snyk-sca-${{ matrix.project }}.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-sca-${{ matrix.project }}.sarif
+          category: snyk-sca-${{ matrix.project }}
+
+  code:
+    name: Snyk Code (SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: code test
+          args: --sarif-file-output=snyk-code.sarif --severity-threshold=low
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+
+  iac:
+    name: Snyk IaC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snyk/actions/iac@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          # Covers Terraform, Kubernetes manifests and both Compose files.
+          args: --report --severity-threshold=low infra/ docker-compose.yml docker-compose.dev.yml
+
+  container:
+    name: Snyk Container
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: Jivora-backend
+            tag: jivora/backend:sectest
+          - app: jivora-web
+            tag: jivora/web:sectest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t ${{ matrix.tag }} ${{ matrix.app }}
+
+      - uses: snyk/actions/docker@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ matrix.tag }}
+          args: --file=${{ matrix.app }}/Dockerfile --severity-threshold=low
